@@ -1,0 +1,141 @@
+name: Codex Issue Worker
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: codex-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    if: >-
+      github.event.label.name == 'codex-run' &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out default branch without persisted credentials
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create isolated working branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH="codex/issue-${{ github.event.issue.number }}-${{ github.run_id }}"
+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
+          git switch -c "$BRANCH"
+
+      - name: Run Codex
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ":workspace"
+          effort: high
+          prompt: |
+            You are implementing a GitHub issue in repository ${{ github.repository }}.
+
+            Issue number: #${{ github.event.issue.number }}
+            Issue title: ${{ github.event.issue.title }}
+
+            Issue body:
+            -----
+            ${{ github.event.issue.body }}
+            -----
+
+            Follow AGENTS.md if it exists.
+
+            Requirements:
+            1. Inspect the repository before changing anything.
+            2. Implement only the requested scope.
+            3. Preserve unrelated behavior and public interfaces unless the issue explicitly requires changes.
+            4. Add or update tests when appropriate.
+            5. Run relevant tests, linters, or validation commands that are available locally.
+            6. Do not commit, push, open a pull request, alter repository secrets, or modify GitHub settings.
+            7. Do not use network access unless the workflow explicitly provides it.
+            8. Leave the working tree containing the complete proposed implementation.
+            9. In your final message, summarize changed files, validation performed, and any remaining risks.
+
+      - name: Detect repository changes
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit proposed changes
+        if: steps.changes.outputs.changed == 'true'
+        shell: bash
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          git config user.name "codex-github-bridge[bot]"
+          git config user.email "codex-github-bridge[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Codex: implement issue #${ISSUE_NUMBER}"
+
+      - name: Push branch and open pull request
+        if: steps.changes.outputs.changed == 'true'
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CODEX_SUMMARY: ${{ steps.codex.outputs.final-message }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git push --set-upstream origin "$BRANCH"
+
+          PR_BODY_FILE="$(mktemp)"
+          {
+            printf 'Automated implementation for #%s.\n\n' "$ISSUE_NUMBER"
+            printf '## Codex summary\n\n%s\n\n' "$CODEX_SUMMARY"
+            printf '%s\n' '---'
+            printf 'Closes #%s\n' "$ISSUE_NUMBER"
+          } > "$PR_BODY_FILE"
+
+          PR_URL="$(gh pr create \
+            --base "$DEFAULT_BRANCH" \
+            --head "$BRANCH" \
+            --title "Codex: $ISSUE_TITLE" \
+            --body-file "$PR_BODY_FILE")"
+
+          echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
+          gh issue comment "$ISSUE_NUMBER" --body "Codex created a pull request: $PR_URL"
+
+      - name: Report no-op result
+        if: steps.changes.outputs.changed == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          CODEX_SUMMARY: ${{ steps.codex.outputs.final-message }}
+        run: |
+          set -euo pipefail
+          BODY_FILE="$(mktemp)"
+          {
+            printf 'Codex completed this task but did not produce repository changes.\n\n'
+            printf '## Codex summary\n\n%s\n' "$CODEX_SUMMARY"
+          } > "$BODY_FILE"
+          gh issue comment "$ISSUE_NUMBER" --body-file "$BODY_FILE"
