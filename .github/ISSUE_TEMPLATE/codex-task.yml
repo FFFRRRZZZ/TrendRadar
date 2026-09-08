@@ -1,0 +1,44 @@
+name: Codex implementation task
+description: Create a scoped task for the Codex GitHub bridge.
+title: "[Codex] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        After reviewing the task, apply the `codex-run` label to start the workflow.
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: Describe the desired end state in one or two paragraphs.
+      placeholder: What should Codex implement or fix?
+    validations:
+      required: true
+
+  - type: textarea
+    id: requirements
+    attributes:
+      label: Requirements
+      description: List concrete requirements and acceptance criteria.
+      placeholder: |
+        - Requirement 1
+        - Requirement 2
+        - Tests should ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+      description: State files, interfaces, dependencies, or behavior that must not change.
+      placeholder: Do not change public API X; do not add new dependencies; etc.
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation
+      description: Commands or checks Codex should run if available.
+      placeholder: pytest -q / npm test / cargo test / project-specific command
